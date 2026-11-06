@@ -1,0 +1,56 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Run tests on a simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if 'iPhone' in x['name']))")
+          echo "Using simulator $UDID"
+          xcodebuild test \
+            -project LifeOS.xcodeproj -scheme LifeOS \
+            -destination "id=$UDID" \
+            CODE_SIGNING_ALLOWED=NO | xcbeautify
+
+      - name: Build unsigned .ipa
+        run: |
+          xcodebuild build \
+            -project LifeOS.xcodeproj -scheme LifeOS \
+            -configuration Release -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | xcbeautify
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/LifeOS.app Payload/
+          zip -qr LifeOS.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LifeOS-ipa
+          path: LifeOS.ipa
+
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LifeOS.ipa
